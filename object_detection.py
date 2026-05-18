@@ -5,6 +5,7 @@ from functools import lru_cache
 import cv2
 
 from detection_udp import DetectionUdpPublisher
+from mjpeg_streamer import MjpegStreamer
 from picamera2 import MappedArray, Picamera2
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
@@ -12,6 +13,8 @@ from video_udp_streamer import VideoUdpStreamer
 
 last_detections = []
 detections_updated = False
+mjpeg_streamer = None
+smoothed_boxes = {}
 
 
 def get_label_for_category(category):
@@ -38,6 +41,40 @@ class Detection:
         self.box = imx500.convert_inference_coords(coords, metadata, picam2)
 
 
+def smooth_detections(detections):
+    """Apply lightweight EMA smoothing to bbox coordinates."""
+    global smoothed_boxes
+    if args.bbox_smoothing_alpha <= 0:
+        smoothed_boxes = {}
+        return detections
+
+    alpha = args.bbox_smoothing_alpha
+    category_counts = {}
+    next_smoothed_boxes = {}
+
+    for detection in detections:
+        category = int(detection.category)
+        index = category_counts.get(category, 0)
+        category_counts[category] = index + 1
+        key = (category, index)
+
+        current_box = tuple(float(value) for value in detection.box)
+        previous_box = smoothed_boxes.get(key)
+        if previous_box is None:
+            smoothed_box = current_box
+        else:
+            smoothed_box = tuple(
+                alpha * current + (1.0 - alpha) * previous
+                for current, previous in zip(current_box, previous_box)
+            )
+
+        next_smoothed_boxes[key] = smoothed_box
+        detection.box = tuple(int(round(value)) for value in smoothed_box)
+
+    smoothed_boxes = next_smoothed_boxes
+    return detections
+
+
 def parse_detections(metadata: dict):
     """Parse the output tensor into a number of detected objects, scaled to the ISP output."""
     global detections_updated, last_detections
@@ -62,6 +99,9 @@ def parse_detections(metadata: dict):
         boxes = scale_boxes(boxes, 1, 1, input_h, input_w, False, False)
     else:
         boxes, scores, classes = np_outputs[0][0], np_outputs[1][0], np_outputs[2][0]
+        if args.bbox_scale != 1.0:
+            boxes = boxes * args.bbox_scale
+
         if bbox_normalization:
             boxes = boxes / input_h
 
@@ -81,6 +121,7 @@ def parse_detections(metadata: dict):
             x, y, w, h = detection.box
             print(f"{label}: conf={score:.2f}, box=({x}, {y}, {w}, {h})")
 
+    last_detections = smooth_detections(last_detections)
     return last_detections
 
 
@@ -95,48 +136,47 @@ def get_labels():
 
 def draw_detections(request, stream="main"):
     """Draw the detections for this request onto the ISP output."""
-    if args.no_overlay:
-        return
-
     detections = last_results
-    if detections is None:
-        return
     with MappedArray(request, stream) as m:
-        for detection in detections:
-            x, y, w, h = detection.box
-            label = f"{get_label_for_category(detection.category)} ({detection.conf:.2f})"
+        if detections is not None and not args.no_overlay:
+            for detection in detections:
+                x, y, w, h = detection.box
+                label = f"{get_label_for_category(detection.category)} ({detection.conf:.2f})"
 
-            # Calculate text size and position
-            (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            text_x = x + 5
-            text_y = y + 15
+                # Calculate text size and position
+                (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                text_x = x + 5
+                text_y = y + 15
 
-            # Create a copy of the array to draw the background with opacity
-            overlay = m.array.copy()
+                # Create a copy of the array to draw the background with opacity
+                overlay = m.array.copy()
 
-            # Draw the background rectangle on the overlay
-            cv2.rectangle(
-                overlay,
-                (text_x, text_y - text_height),
-                (text_x + text_width, text_y + baseline),
-                (255, 255, 255),  # Background color (white)
-                cv2.FILLED,
-            )
+                # Draw the background rectangle on the overlay
+                cv2.rectangle(
+                    overlay,
+                    (text_x, text_y - text_height),
+                    (text_x + text_width, text_y + baseline),
+                    (255, 255, 255),  # Background color (white)
+                    cv2.FILLED,
+                )
 
-            alpha = 0.30
-            cv2.addWeighted(overlay, alpha, m.array, 1 - alpha, 0, m.array)
+                alpha = 0.30
+                cv2.addWeighted(overlay, alpha, m.array, 1 - alpha, 0, m.array)
 
-            # Draw text on top of the background
-            cv2.putText(m.array, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                # Draw text on top of the background
+                cv2.putText(m.array, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-            # Draw detection box
-            cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0, 0), thickness=2)
+                # Draw detection box
+                cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0, 0), thickness=2)
 
-        if intrinsics.preserve_aspect_ratio:
+        if not args.no_overlay and intrinsics.preserve_aspect_ratio:
             b_x, b_y, b_w, b_h = imx500.get_roi_scaled(request)
             color = (255, 0, 0)  # red
             cv2.putText(m.array, "ROI", (b_x + 5, b_y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             cv2.rectangle(m.array, (b_x, b_y), (b_x + b_w, b_y + b_h), (255, 0, 0, 0))
+
+        if mjpeg_streamer is not None:
+            mjpeg_streamer.publish(m.array)
 
 
 def get_args():
@@ -149,10 +189,17 @@ def get_args():
     )
     parser.add_argument("--fps", type=int, help="Frames per second")
     parser.add_argument("--bbox-normalization", action=argparse.BooleanOptionalAction, help="Normalize bbox")
+    parser.add_argument("--bbox-scale", type=float, default=1.0, help="Scale raw bbox output before normalization")
     parser.add_argument(
         "--bbox-order", choices=["yx", "xy"], default="yx", help="Set bbox order yx -> (y0, x0, y1, x1) xy -> (x0, y0, x1, y1)"
     )
     parser.add_argument("--threshold", type=float, default=0.55, help="Detection threshold")
+    parser.add_argument(
+        "--bbox-smoothing-alpha",
+        type=float,
+        default=0.35,
+        help="EMA smoothing factor for bbox coordinates. 0 disables smoothing, higher values react faster.",
+    )
     parser.add_argument("--iou", type=float, default=0.65, help="Set iou threshold")
     parser.add_argument("--max-detections", type=int, default=10, help="Set max detections")
     parser.add_argument("--ignore-dash-labels", action=argparse.BooleanOptionalAction, help="Remove '-' labels ")
@@ -177,7 +224,7 @@ def get_args():
     parser.add_argument("--video-udp", action="store_true", help="Stream video with bbox overlay over UDP")
     parser.add_argument("--video-udp-host", type=str, default="127.0.0.1", help="Video UDP destination host")
     parser.add_argument("--video-udp-port", type=int, default=5006, help="Video UDP destination port")
-    parser.add_argument("--video-bitrate", type=int, default=4_000_000, help="Video H.264 bitrate")
+    parser.add_argument("--video-bitrate", type=int, default=1_000_000, help="Video H.264 bitrate")
     parser.add_argument(
         "--video-stream",
         choices=["lores", "main"],
@@ -186,12 +233,19 @@ def get_args():
     )
     parser.add_argument("--no-preview", action="store_true", help="Disable local camera preview window")
     parser.add_argument("--no-overlay", action="store_true", help="Disable drawing bbox overlay on the output frame")
+    parser.add_argument("--mjpeg", action="store_true", help="Serve MJPEG stream from the camera process")
+    parser.add_argument("--mjpeg-host", type=str, default="0.0.0.0", help="MJPEG HTTP host")
+    parser.add_argument("--mjpeg-port", type=int, default=8081, help="MJPEG HTTP port")
+    parser.add_argument("--mjpeg-quality", type=int, default=75, help="MJPEG JPEG quality")
     parser.add_argument("--print-intrinsics", action="store_true", help="Print JSON network_intrinsics then exit")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
+    if not 0.0 <= args.bbox_smoothing_alpha <= 1.0:
+        print("--bbox-smoothing-alpha must be between 0 and 1", file=sys.stderr)
+        exit(2)
 
     # This must be called before instantiation of Picamera2
     imx500 = IMX500(args.model)
@@ -221,11 +275,17 @@ if __name__ == "__main__":
         print(intrinsics)
         exit()
 
+    mjpeg_streamer = None
+    if args.mjpeg:
+        mjpeg_streamer = MjpegStreamer(args.mjpeg_host, args.mjpeg_port, args.mjpeg_quality)
+        mjpeg_streamer.start()
+        print(f"Serving MJPEG on http://{args.mjpeg_host}:{args.mjpeg_port}/mjpeg")
+
     picam2 = Picamera2(imx500.camera_num)
     if args.video_udp:
         config = picam2.create_preview_configuration(
             main={"size": (640, 480), "format": "XBGR8888"},
-            lores={"size": (640, 480), "format": "YUV420"},
+            lores={"size": (480, 360), "format": "YUV420"},
             controls={"FrameRate": intrinsics.inference_rate},
             buffer_count=12,
             display="main",
@@ -266,5 +326,7 @@ if __name__ == "__main__":
     finally:
         if video_streamer is not None:
             video_streamer.stop(picam2)
+        if mjpeg_streamer is not None:
+            mjpeg_streamer.stop()
         if udp_publisher is not None:
             udp_publisher.close()

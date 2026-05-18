@@ -7,6 +7,7 @@ const source = document.getElementById("source");
 const detections = document.getElementById("detections");
 const rawJson = document.getElementById("rawJson");
 const video = document.getElementById("video");
+const mjpegVideo = document.getElementById("mjpegVideo");
 
 let latestMessage = null;
 let hlsPlayer = null;
@@ -71,6 +72,26 @@ function connectEvents() {
 }
 
 function startVideo() {
+  startMjpeg();
+}
+
+function startMjpeg() {
+  const url = "/mjpeg";
+  video.style.display = "none";
+  mjpegVideo.style.display = "block";
+  setStatus(videoStatus, "mjpeg live", true);
+  mjpegVideo.onload = () => {
+    videoStarted = true;
+    setStatus(videoStatus, "mjpeg live", true);
+  };
+  mjpegVideo.onerror = () => {
+    videoStarted = false;
+    setStatus(videoStatus, "mjpeg waiting", false);
+  };
+  mjpegVideo.src = `${url}?t=${Date.now()}`;
+}
+
+function startHlsVideo() {
   const sourceUrl = "/hls/stream.m3u8";
   if (videoStarted) {
     return;
@@ -78,8 +99,9 @@ function startVideo() {
 
   if (window.Hls && Hls.isSupported()) {
     hlsPlayer = new Hls({
-      liveSyncDurationCount: 2,
-      maxLiveSyncPlaybackRate: 1.5,
+      liveSyncDurationCount: 1,
+      maxLiveSyncPlaybackRate: 2,
+      lowLatencyMode: true,
     });
     hlsPlayer.loadSource(sourceUrl);
     hlsPlayer.attachMedia(video);
@@ -113,6 +135,10 @@ function startVideo() {
 }
 
 async function pollVideoStatus() {
+  if (mjpegVideo.style.display === "block") {
+    return;
+  }
+
   try {
     const response = await fetch("/api/video-status", { cache: "no-store" });
     const status = await response.json();
@@ -126,7 +152,7 @@ async function pollVideoStatus() {
     }
     if (!videoStarted && !hlsPlayer) {
       setStatus(videoStatus, "loading video", false);
-      startVideo();
+      startHlsVideo();
     }
   } catch (_error) {
     setStatus(videoStatus, "video status error", false);
@@ -146,5 +172,4 @@ setInterval(() => {
 }, 250);
 
 connectEvents();
-pollVideoStatus();
-setInterval(pollVideoStatus, 2000);
+startVideo();

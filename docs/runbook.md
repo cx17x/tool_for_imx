@@ -208,10 +208,10 @@ python3 object_detection.py
 
 ## Полезные параметры object_detection.py
 
-Показать только другой класс:
+Показать только текущий класс сервиса:
 
 ```bash
-python3 object_detection.py --target-class car
+python3 object_detection.py --target-class person
 ```
 
 Показать и отправлять все классы:
@@ -223,8 +223,16 @@ python3 object_detection.py --target-class all
 Изменить threshold:
 
 ```bash
-python3 object_detection.py --threshold 0.65
+python3 object_detection.py --threshold 0.3
 ```
+
+Изменить сглаживание bbox:
+
+```bash
+python3 object_detection.py --bbox-smoothing-alpha 0.75
+```
+
+`0` отключает сглаживание. Чем меньше значение, тем плавнее bbox и тем больше визуальная задержка. Чем ближе к `1`, тем быстрее bbox реагирует на новые detections.
 
 Изменить UDP destination для bbox:
 
@@ -264,15 +272,31 @@ python3 object_detection.py --model /path/to/model.rpk
 
 ## Запуск video UDP
 
-Видео по UDP включается отдельным `lores` YUV420 stream. Это безопаснее, чем кодировать `main`, потому что `main` используется для IMX500 demo-style overlay.
+Для минимальной задержки используем MJPEG из процесса, который владеет камерой:
 
 ```bash
-python3 object_detection.py --video-udp --video-stream lores --no-preview --no-overlay
+python3 object_detection.py --mjpeg --mjpeg-host 0.0.0.0 --mjpeg-port 8081 --no-preview
 ```
 
-`--video-stream lores` не содержит OpenCV overlay. Это режим для проверки стабильного video UDP.
+Поток доступен в браузере:
 
-Чтобы попробовать видео с overlay, можно отдельно протестировать:
+```text
+http://<raspberry-pi-ip>:8081/mjpeg
+```
+
+Dashboard на `:8080` использует этот MJPEG stream как основной video source.
+
+Текущие MJPEG defaults:
+
+```text
+MJPEG port: 8081
+JPEG quality: 75
+bbox normalization: enabled
+bbox order: xy
+bbox smoothing alpha: 0.75
+```
+
+HLS/video UDP можно оставить как fallback/debug, но он имеет большую задержку.
 
 ```bash
 python3 object_detection.py --video-udp --video-stream main --no-preview

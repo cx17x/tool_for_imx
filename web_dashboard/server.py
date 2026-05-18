@@ -1,6 +1,7 @@
 import argparse
 import json
 import mimetypes
+import http.client
 import shutil
 import socket
 import subprocess
@@ -39,9 +40,11 @@ def get_args():
     parser.add_argument("--bbox-port", type=int, default=5005, help="UDP port to bind for bbox JSON")
     parser.add_argument("--video-host", default="127.0.0.1", help="UDP host for incoming MPEG-TS video")
     parser.add_argument("--video-port", type=int, default=5006, help="UDP port for incoming MPEG-TS video")
+    parser.add_argument("--mjpeg-host", default="127.0.0.1", help="MJPEG upstream host")
+    parser.add_argument("--mjpeg-port", type=int, default=8081, help="MJPEG upstream port")
     parser.add_argument("--no-video", action="store_true", help="Disable ffmpeg UDP video to HLS bridge")
-    parser.add_argument("--hls-segment-time", type=float, default=1.0, help="HLS segment length in seconds")
-    parser.add_argument("--hls-list-size", type=int, default=4, help="Number of HLS segments in playlist")
+    parser.add_argument("--hls-segment-time", type=float, default=0.3, help="HLS segment length in seconds")
+    parser.add_argument("--hls-list-size", type=int, default=2, help="Number of HLS segments in playlist")
     return parser.parse_args()
 
 
@@ -134,6 +137,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}", flush=True)
 
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/bbox":
@@ -142,6 +149,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if path == "/api/video-status":
             self.send_json(get_video_status())
             return
+        if path == "/mjpeg":
+            self.proxy_mjpeg()
+            return
         if path == "/events":
             self.send_events()
             return
@@ -149,6 +159,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "ts": time.time()})
             return
         super().do_GET()
+
+    def proxy_mjpeg(self):
+        try:
+            connection = http.client.HTTPConnection(self.server.mjpeg_host, self.server.mjpeg_port, timeout=5)
+            connection.request("GET", "/mjpeg")
+            response = connection.getresponse()
+        except OSError as exc:
+            self.send_error(502, f"MJPEG upstream unavailable: {exc}")
+            return
+
+        if response.status != 200:
+            self.send_error(502, f"MJPEG upstream returned {response.status}")
+            connection.close()
+            return
+
+        self.send_response(200)
+        self.send_header("Age", "0")
+        self.send_header("Cache-Control", "no-cache, private")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Content-Type", response.getheader("Content-Type", "multipart/x-mixed-replace; boundary=FRAME"))
+        self.end_headers()
+
+        try:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    return
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            connection.close()
 
     def send_bbox_json(self):
         with state_lock:
@@ -204,6 +246,8 @@ def main():
         video_process = start_video_hls_bridge(args)
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    server.mjpeg_host = args.mjpeg_host
+    server.mjpeg_port = args.mjpeg_port
     print(f"Dashboard: http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()

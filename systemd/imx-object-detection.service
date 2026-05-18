@@ -5,9 +5,10 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/pi/tool_for_imx
-ExecStart=/home/pi/venv/bin/python /home/pi/tool_for_imx/object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --target-class person --udp-host 127.0.0.1 --udp-port 5005 --no-preview
+ExecStartPre=/home/pi/tool_for_imx/scripts/wait_for_camera.sh 60
+ExecStart=/home/pi/venv/bin/python /home/pi/tool_for_imx/object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --bbox-normalization --bbox-order xy --threshold 0.3 --bbox-smoothing-alpha 0.75 --target-class person --udp-host 127.0.0.1 --udp-port 5005 --no-preview
 Restart=always
-RestartSec=2
+RestartSec=10
 User=pi
 Environment=PYTHONUNBUFFERED=1
 

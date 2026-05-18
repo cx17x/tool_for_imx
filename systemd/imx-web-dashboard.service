@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/pi/tool_for_imx
-ExecStart=/home/pi/venv/bin/python /home/pi/tool_for_imx/web_dashboard/server.py --host 0.0.0.0 --port 8080 --bbox-host 127.0.0.1 --bbox-port 5005 --video-host 127.0.0.1 --video-port 5006
+ExecStart=/home/pi/venv/bin/python /home/pi/tool_for_imx/web_dashboard/server.py --host 0.0.0.0 --port 8080 --bbox-host 127.0.0.1 --bbox-port 5005 --no-video --mjpeg-host 127.0.0.1 --mjpeg-port 8081
 Restart=always
 RestartSec=2
 User=pi

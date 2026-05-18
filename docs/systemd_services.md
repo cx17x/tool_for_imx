@@ -27,17 +27,17 @@ systemd/imx-object-detection.service
 systemd/imx-object-detection-video.service
 ```
 
-Вариант с video UDP. Кодирует отдельный `lores` stream, чтобы не мешать основному IMX500 detection loop:
+Вариант с MJPEG video. Видео отдается из того же процесса, который владеет камерой:
 
 ```bash
-/home/pi/venv/bin/python object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --target-class person --udp-host 127.0.0.1 --udp-port 5005 --video-udp --video-stream lores --video-udp-host 127.0.0.1 --video-udp-port 5006 --no-preview --no-overlay
+/home/pi/venv/bin/python object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --target-class person --udp-host 127.0.0.1 --udp-port 5005 --mjpeg --mjpeg-host 0.0.0.0 --mjpeg-port 8081 --mjpeg-quality 75 --no-preview
 ```
 
 Этот вариант отправляет:
 
 ```text
 127.0.0.1:5005/udp - bbox JSON
-127.0.0.1:5006/udp - video from lores stream
+0.0.0.0:8081/http - MJPEG video
 ```
 
 Важно: не включайте одновременно `imx-object-detection.service` и `imx-object-detection-video.service`, потому что оба будут пытаться использовать камеру.
@@ -61,7 +61,7 @@ systemd/imx-web-dashboard.service
 Web dashboard. Запускает:
 
 ```bash
-/home/pi/venv/bin/python web_dashboard/server.py --host 0.0.0.0 --port 8080 --bbox-host 127.0.0.1 --bbox-port 5005 --video-host 127.0.0.1 --video-port 5006
+/home/pi/venv/bin/python web_dashboard/server.py --host 0.0.0.0 --port 8080 --bbox-host 127.0.0.1 --bbox-port 5005 --no-video
 ```
 
 Dashboard принимает `bbox` UDP и video UDP, а в браузер отдает:
@@ -141,6 +141,8 @@ PROJECT_DIR=/path/to/tool_for_imx SERVICE_USER=myuser VENV_DIR=/path/to/venv MOD
 - подставляет `MODEL_PATH`;
 - подставляет `LABELS_PATH`;
 - выполняет `systemctl daemon-reload`.
+
+Detection services use `scripts/wait_for_camera.sh` before starting Python. This prevents the service from starting before `rpicam-hello --list-cameras` can see the IMX500 camera.
 
 ## Запуск bbox-only сервиса
 

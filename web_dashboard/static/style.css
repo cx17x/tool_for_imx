@@ -61,12 +61,17 @@ h2 {
   font-weight: 650;
 }
 
-video {
+video,
+.mjpeg-video {
   width: 100%;
   flex: 1;
   min-height: 360px;
   background: #050609;
   object-fit: contain;
+}
+
+.mjpeg-video {
+  display: none;
 }
 
 .side-panel {
