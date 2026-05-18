@@ -1,0 +1,15 @@
+[Unit]
+Description=IMX500 BBox UDP Debug Receiver
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/tool_for_imx
+ExecStart=/usr/bin/python3 /home/pi/tool_for_imx/udp_bbox_receiver.py --host 127.0.0.1 --port 5005
+Restart=always
+RestartSec=2
+User=pi
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

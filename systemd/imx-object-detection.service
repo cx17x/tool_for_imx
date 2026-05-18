@@ -1,0 +1,15 @@
+[Unit]
+Description=IMX500 Object Detection
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/tool_for_imx
+ExecStart=/usr/bin/python3 /home/pi/tool_for_imx/object_detection.py --target-class person --udp-host 127.0.0.1 --udp-port 5005 --no-preview
+Restart=always
+RestartSec=2
+User=pi
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

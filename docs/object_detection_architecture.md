@@ -232,11 +232,68 @@ docs/
 while True:
   metadata = picam2.capture_metadata()
   detections = parse_detections(metadata)
-  udp_publisher.send(detections)
+  if detections_updated:
+    udp_publisher.send(detections)
   last_results = detections
 ```
 
 `draw_detections()` может продолжать использовать `last_results` для overlay, а UDP publisher получает тот же список детекций.
+
+Для видео можно показывать последний известный `bbox`, пока не пришел следующий inference output. Для управляющего UDP-потока лучше отправлять данные только когда пришел новый inference output, чтобы старые координаты не выглядели как новые из-за свежего timestamp.
+
+## Реализованный запуск
+
+По умолчанию `object_detection.py` отправляет `bbox` на локальный UDP-порт:
+
+```bash
+python3 object_detection.py
+```
+
+Параметры по умолчанию:
+
+```text
+bbox UDP host: 127.0.0.1
+bbox UDP port: 5005
+target class: person
+```
+
+Запуск с явным портом:
+
+```bash
+python3 object_detection.py --udp-host 127.0.0.1 --udp-port 5005
+```
+
+Отключить отправку `bbox` по UDP:
+
+```bash
+python3 object_detection.py --no-udp
+```
+
+Отправлять другой класс:
+
+```bash
+python3 object_detection.py --target-class car
+```
+
+Отправлять все классы:
+
+```bash
+python3 object_detection.py --target-class all
+```
+
+Тестовый приемник для `bbox`:
+
+```bash
+python3 udp_bbox_receiver.py --host 127.0.0.1 --port 5005
+```
+
+Видеопоток с overlay включается отдельно:
+
+```bash
+python3 object_detection.py --video-udp --video-udp-host 127.0.0.1 --video-udp-port 5006
+```
+
+Получатель видео должен принимать `H.264` в контейнере `MPEG-TS` по UDP.
 
 ## Что важно для управляющего контура
 
@@ -258,8 +315,7 @@ norm_y = center_y / frame_height
 
 ## Следующий шаг реализации
 
-1. Создать `detection_udp.py` с классом `DetectionUdpPublisher`.
-2. Добавить в `object_detection.py` аргументы `--udp-host`, `--udp-port`, `--no-udp`.
-3. После `parse_detections()` отправлять текущий список bbox через publisher.
-4. Добавить `udp_bbox_receiver.py` для локальной проверки.
-5. Добавить отправку видео с overlay отдельным UDP-потоком.
+1. Проверить `bbox` UDP на Raspberry Pi через `udp_bbox_receiver.py`.
+2. Проверить video UDP на принимающей стороне.
+3. При необходимости добавить нормализованные координаты `bbox`.
+4. При необходимости добавить timestamp/sequence id, общий для видео и `bbox`.

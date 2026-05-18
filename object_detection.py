@@ -4,11 +4,14 @@ from functools import lru_cache
 
 import cv2
 
+from detection_udp import DetectionUdpPublisher
 from picamera2 import MappedArray, Picamera2
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
+from video_udp_streamer import VideoUdpStreamer
 
 last_detections = []
+detections_updated = False
 
 
 def get_label_for_category(category):
@@ -37,7 +40,7 @@ class Detection:
 
 def parse_detections(metadata: dict):
     """Parse the output tensor into a number of detected objects, scaled to the ISP output."""
-    global last_detections
+    global detections_updated, last_detections
     bbox_normalization = intrinsics.bbox_normalization
     bbox_order = intrinsics.bbox_order
     threshold = args.threshold
@@ -47,7 +50,9 @@ def parse_detections(metadata: dict):
     np_outputs = imx500.get_outputs(metadata, add_batch=True)
     input_w, input_h = imx500.get_input_size()
     if np_outputs is None:
+        detections_updated = False
         return last_detections
+    detections_updated = True
     if intrinsics.postprocess == "nanodet":
         boxes, scores, classes = postprocess_nanodet_detection(
             outputs=np_outputs[0], conf=threshold, iou_thres=iou, max_out_dets=max_detections
@@ -93,7 +98,6 @@ def draw_detections(request, stream="main"):
     detections = last_results
     if detections is None:
         return
-    labels = get_labels()
     with MappedArray(request, stream) as m:
         for detection in detections:
             x, y, w, h = detection.box
@@ -164,6 +168,14 @@ def get_args():
         help="Only show detections for this class label. Use 'all' to show every class.",
     )
     parser.add_argument("--print-detections", action="store_true", help="Print matching detections to stdout")
+    parser.add_argument("--no-udp", action="store_true", help="Disable bbox UDP publishing")
+    parser.add_argument("--udp-host", type=str, default="127.0.0.1", help="BBox UDP destination host")
+    parser.add_argument("--udp-port", type=int, default=5005, help="BBox UDP destination port")
+    parser.add_argument("--video-udp", action="store_true", help="Stream video with bbox overlay over UDP")
+    parser.add_argument("--video-udp-host", type=str, default="127.0.0.1", help="Video UDP destination host")
+    parser.add_argument("--video-udp-port", type=int, default=5006, help="Video UDP destination port")
+    parser.add_argument("--video-bitrate", type=int, default=4_000_000, help="Video H.264 bitrate")
+    parser.add_argument("--no-preview", action="store_true", help="Disable local camera preview window")
     parser.add_argument("--print-intrinsics", action="store_true", help="Print JSON network_intrinsics then exit")
     return parser.parse_args()
 
@@ -203,12 +215,34 @@ if __name__ == "__main__":
     config = picam2.create_preview_configuration(controls={"FrameRate": intrinsics.inference_rate}, buffer_count=12)
 
     imx500.show_network_fw_progress_bar()
-    picam2.start(config, show_preview=True)
+    picam2.start(config, show_preview=not args.no_preview)
 
     if intrinsics.preserve_aspect_ratio:
         imx500.set_auto_aspect_ratio()
 
     last_results = None
     picam2.pre_callback = draw_detections
-    while True:
-        last_results = parse_detections(picam2.capture_metadata())
+
+    udp_publisher = None
+    if not args.no_udp:
+        udp_publisher = DetectionUdpPublisher(args.udp_host, args.udp_port)
+        print(f"Publishing bbox UDP to {args.udp_host}:{args.udp_port}")
+
+    video_streamer = None
+    if args.video_udp:
+        video_streamer = VideoUdpStreamer(args.video_udp_host, args.video_udp_port, args.video_bitrate)
+        video_streamer.start(picam2)
+        print(f"Streaming video UDP to {args.video_udp_host}:{args.video_udp_port}")
+
+    try:
+        while True:
+            last_results = parse_detections(picam2.capture_metadata())
+            if udp_publisher is not None and detections_updated:
+                udp_publisher.send(last_results, args.target_class, get_label_for_category)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if video_streamer is not None:
+            video_streamer.stop(picam2)
+        if udp_publisher is not None:
+            udp_publisher.close()
