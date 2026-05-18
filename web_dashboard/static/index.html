@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>IMX500 Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="dashboard">
+      <section class="video-panel">
+        <header class="panel-header">
+          <h1>IMX500</h1>
+          <div id="videoStatus" class="status status-waiting">video waiting</div>
+        </header>
+        <video id="video" controls autoplay muted playsinline></video>
+      </section>
+
+      <aside class="side-panel">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>BBox</h2>
+            <div id="bboxStatus" class="status status-waiting">waiting</div>
+          </div>
+          <dl class="metrics">
+            <div>
+              <dt>Class</dt>
+              <dd id="targetClass">-</dd>
+            </div>
+            <div>
+              <dt>Detections</dt>
+              <dd id="detectionCount">0</dd>
+            </div>
+            <div>
+              <dt>Age</dt>
+              <dd id="messageAge">-</dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd id="source">-</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel detections-panel">
+          <div class="panel-header">
+            <h2>Detections</h2>
+          </div>
+          <div id="detections" class="detections"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Raw JSON</h2>
+          </div>
+          <pre id="rawJson">{}</pre>
+        </section>
+      </aside>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

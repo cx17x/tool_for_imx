@@ -95,6 +95,9 @@ def get_labels():
 
 def draw_detections(request, stream="main"):
     """Draw the detections for this request onto the ISP output."""
+    if args.no_overlay:
+        return
+
     detections = last_results
     if detections is None:
         return
@@ -142,7 +145,7 @@ def get_args():
         "--model",
         type=str,
         help="Path of the model",
-        default="/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk",
+        default="/home/qwerty/q_imx_model/rpk_out/network.rpk",
     )
     parser.add_argument("--fps", type=int, help="Frames per second")
     parser.add_argument("--bbox-normalization", action=argparse.BooleanOptionalAction, help="Normalize bbox")
@@ -160,7 +163,7 @@ def get_args():
         action=argparse.BooleanOptionalAction,
         help="preserve the pixel aspect ratio of the input tensor",
     )
-    parser.add_argument("--labels", type=str, help="Path to the labels file")
+    parser.add_argument("--labels", type=str, default="/home/qwerty/q_imx_model/labels.txt", help="Path to the labels file")
     parser.add_argument(
         "--target-class",
         type=str,
@@ -175,7 +178,14 @@ def get_args():
     parser.add_argument("--video-udp-host", type=str, default="127.0.0.1", help="Video UDP destination host")
     parser.add_argument("--video-udp-port", type=int, default=5006, help="Video UDP destination port")
     parser.add_argument("--video-bitrate", type=int, default=4_000_000, help="Video H.264 bitrate")
+    parser.add_argument(
+        "--video-stream",
+        choices=["lores", "main"],
+        default="lores",
+        help="Picamera2 stream to encode for video UDP. 'lores' is safer; 'main' can include overlay.",
+    )
     parser.add_argument("--no-preview", action="store_true", help="Disable local camera preview window")
+    parser.add_argument("--no-overlay", action="store_true", help="Disable drawing bbox overlay on the output frame")
     parser.add_argument("--print-intrinsics", action="store_true", help="Print JSON network_intrinsics then exit")
     return parser.parse_args()
 
@@ -203,7 +213,7 @@ if __name__ == "__main__":
 
     # Defaults
     if intrinsics.labels is None:
-        with open("assets/coco_labels.txt", "r") as f:
+        with open(args.labels, "r") as f:
             intrinsics.labels = f.read().splitlines()
     intrinsics.update_with_defaults()
 
@@ -212,10 +222,20 @@ if __name__ == "__main__":
         exit()
 
     picam2 = Picamera2(imx500.camera_num)
-    config = picam2.create_preview_configuration(controls={"FrameRate": intrinsics.inference_rate}, buffer_count=12)
+    if args.video_udp:
+        config = picam2.create_preview_configuration(
+            main={"size": (640, 480), "format": "XBGR8888"},
+            lores={"size": (640, 480), "format": "YUV420"},
+            controls={"FrameRate": intrinsics.inference_rate},
+            buffer_count=12,
+            display="main",
+            encode=args.video_stream,
+        )
+    else:
+        config = picam2.create_preview_configuration(controls={"FrameRate": intrinsics.inference_rate}, buffer_count=12)
 
     imx500.show_network_fw_progress_bar()
-    picam2.start(config, show_preview=not args.no_preview)
+    picam2.configure(config)
 
     if intrinsics.preserve_aspect_ratio:
         imx500.set_auto_aspect_ratio()
@@ -231,8 +251,10 @@ if __name__ == "__main__":
     video_streamer = None
     if args.video_udp:
         video_streamer = VideoUdpStreamer(args.video_udp_host, args.video_udp_port, args.video_bitrate)
-        video_streamer.start(picam2)
-        print(f"Streaming video UDP to {args.video_udp_host}:{args.video_udp_port}")
+        video_streamer.start(picam2, stream_name=args.video_stream)
+        print(f"Streaming video UDP from {args.video_stream} to {args.video_udp_host}:{args.video_udp_port}")
+
+    picam2.start(show_preview=not args.no_preview)
 
     try:
         while True:

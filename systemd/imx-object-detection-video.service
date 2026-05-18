@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/pi/tool_for_imx
-ExecStart=/usr/bin/python3 /home/pi/tool_for_imx/object_detection.py --target-class person --udp-host 127.0.0.1 --udp-port 5005 --video-udp --video-udp-host 127.0.0.1 --video-udp-port 5006 --no-preview
+ExecStart=/home/pi/venv/bin/python /home/pi/tool_for_imx/object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --target-class person --udp-host 127.0.0.1 --udp-port 5005 --video-udp --video-stream lores --video-udp-host 127.0.0.1 --video-udp-port 5006 --no-preview --no-overlay
 Restart=always
 RestartSec=2
 User=pi

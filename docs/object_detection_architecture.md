@@ -191,6 +191,41 @@ UDP 5005: bbox JSON for guidance/control
 UDP 5006: encoded video with bbox overlay for operator/debug
 ```
 
+## Web dashboard
+
+Браузер не умеет читать UDP-порты напрямую, поэтому для веб-страницы нужен backend:
+
+```text
+UDP 5005 bbox JSON
+  |
+  v
+web_dashboard/server.py
+  |
+  +--> Server-Sent Events --> browser bbox panel
+
+UDP 5006 MPEG-TS/H.264 video
+  |
+  v
+web_dashboard/server.py + ffmpeg
+  |
+  +--> HLS --> browser video element
+```
+
+Dashboard открывается по HTTP:
+
+```text
+http://<host>:8080
+```
+
+На странице отображаются:
+
+- видео с уже отрисованными `bbox`;
+- последняя пачка координат;
+- количество detections;
+- raw JSON.
+
+Важно: `web_dashboard/server.py` занимает UDP-порт `5005` как receiver. Его нельзя запускать одновременно с другим receiver на том же host/port, например `udp_bbox_receiver.py`, без изменения портов.
+
 ## Синхронизация bbox и видео
 
 Если принимающей стороне нужно сопоставлять bbox с конкретным моментом видео, в оба потока нужно добавлять timestamp.

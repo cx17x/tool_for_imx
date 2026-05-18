@@ -55,6 +55,27 @@ video_udp_streamer.py
 - должен использоваться только когда нужен видеопоток по сети.
 
 ```text
+web_dashboard/server.py
+```
+
+Web dashboard backend. Он:
+
+- слушает `bbox` UDP;
+- запускает `ffmpeg` bridge для video UDP в HLS;
+- отдает веб-страницу на HTTP-порту;
+- отправляет новые `bbox` в браузер через Server-Sent Events.
+
+```text
+web_dashboard/static/
+```
+
+Frontend dashboard:
+
+- показывает видео;
+- показывает последние координаты `bbox`;
+- показывает raw JSON.
+
+```text
 docs/object_detection_architecture.md
 ```
 
@@ -84,10 +105,51 @@ docs/runbook.md
 Модель по умолчанию:
 
 ```text
-/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk
+/home/qwerty/q_imx_model/rpk_out/network.rpk
+```
+
+Labels по умолчанию:
+
+```text
+/home/qwerty/q_imx_model/labels.txt
 ```
 
 Если используется другая модель, передайте ее через `--model`.
+
+Найти доступные `.rpk` модели на Raspberry Pi:
+
+```bash
+find /usr/share -name '*.rpk' 2>/dev/null
+find /home/qwerty -name '*.rpk' 2>/dev/null
+```
+
+Установить базовые зависимости на Raspberry Pi:
+
+```bash
+./scripts/install_pi_dependencies.sh
+```
+
+Скрипт устанавливает:
+
+- `python3-opencv`, чтобы работал импорт `cv2`;
+- `python3-picamera2`;
+- `ffmpeg`, если нужен video UDP/dashboard;
+- `rsync`.
+
+Скрипт также создает или настраивает `~/venv` так, чтобы virtualenv видел системные Raspberry Pi пакеты:
+
+```text
+include-system-site-packages = true
+```
+
+Это важно для `picamera2`, который обычно устанавливается через `apt`, а не через `pip`.
+
+Проверить вручную:
+
+```bash
+/home/qwerty/venv/bin/python -c "import cv2; print(cv2.__version__)"
+/home/qwerty/venv/bin/python -c "import picamera2; print('picamera2 ok')"
+```
 
 ## Базовый запуск bbox UDP
 
@@ -182,6 +244,12 @@ python3 object_detection.py --no-udp
 python3 object_detection.py --no-preview
 ```
 
+Отключить отрисовку bbox поверх кадра, полезно для диагностики video encoder:
+
+```bash
+python3 object_detection.py --no-overlay
+```
+
 Печатать detections в stdout:
 
 ```bash
@@ -196,13 +264,21 @@ python3 object_detection.py --model /path/to/model.rpk
 
 ## Запуск video UDP
 
-Видео по UDP выключено по умолчанию. Чтобы включить:
+Видео по UDP включается отдельным `lores` YUV420 stream. Это безопаснее, чем кодировать `main`, потому что `main` используется для IMX500 demo-style overlay.
 
 ```bash
-python3 object_detection.py --video-udp --video-udp-host 127.0.0.1 --video-udp-port 5006
+python3 object_detection.py --video-udp --video-stream lores --no-preview --no-overlay
 ```
 
-Поток отправляется как `H.264` в контейнере `MPEG-TS`.
+`--video-stream lores` не содержит OpenCV overlay. Это режим для проверки стабильного video UDP.
+
+Чтобы попробовать видео с overlay, можно отдельно протестировать:
+
+```bash
+python3 object_detection.py --video-udp --video-stream main --no-preview
+```
+
+Если при `main` снова появляются ошибки V4L2/CFE buffer queue, нужно оставить `lores` и рисовать bbox уже в web dashboard поверх видео по координатам из UDP.
 
 Пример приема через ffplay:
 
@@ -235,6 +311,123 @@ python3 object_detection.py --video-udp
 ```
 
 Каждую команду удобнее запускать в отдельном терминале.
+
+## Перенос проекта на Raspberry Pi
+
+Для синхронизации проекта на Raspberry Pi `192.168.1.108`:
+
+```bash
+./scripts/sync_to_pi.sh
+```
+
+По умолчанию используется:
+
+```text
+host: 192.168.1.108
+user: pi
+remote dir: /home/pi/tool_for_imx
+```
+
+Если пользователь другой:
+
+```bash
+PI_USER=qwerty ./scripts/sync_to_pi.sh
+```
+
+Если нужно сразу установить `systemd` сервисы после переноса:
+
+```bash
+./scripts/sync_to_pi.sh --install-services
+```
+
+На шаге установки сервисов удаленный `sudo` может запросить пароль пользователя Raspberry Pi. Для этого скрипт использует интерактивный SSH TTY.
+
+Сервисы запускают Python из virtualenv:
+
+```text
+/home/<user>/venv/bin/python
+```
+
+Для пользователя `qwerty` это:
+
+```text
+/home/qwerty/venv/bin/python
+```
+
+Если virtualenv находится в другом месте:
+
+```bash
+PI_USER=qwerty PI_VENV_DIR=/path/to/venv ./scripts/sync_to_pi.sh --install-services
+```
+
+Если `.rpk` модель находится не по стандартному пути:
+
+```bash
+PI_USER=qwerty PI_MODEL_PATH=/path/to/model.rpk ./scripts/sync_to_pi.sh --install-services
+```
+
+Если labels находятся в другом месте:
+
+```bash
+PI_USER=qwerty PI_LABELS_PATH=/path/to/labels.txt ./scripts/sync_to_pi.sh --install-services
+```
+
+Если нужно перенести код и перезапустить уже активные сервисы:
+
+```bash
+./scripts/sync_to_pi.sh --restart-services
+```
+
+Можно совместить:
+
+```bash
+./scripts/sync_to_pi.sh --install-services --restart-services
+```
+
+## Запуск web dashboard
+
+Dashboard показывает видео и координаты на одной странице.
+
+Терминал 1:
+
+```bash
+python3 web_dashboard/server.py --host 0.0.0.0 --port 8080 --bbox-host 127.0.0.1 --bbox-port 5005 --video-host 127.0.0.1 --video-port 5006
+```
+
+Терминал 2:
+
+```bash
+python3 object_detection.py --video-udp --no-preview
+```
+
+Открыть в браузере:
+
+```text
+http://127.0.0.1:8080
+```
+
+Если браузер открыт с другого компьютера:
+
+```text
+http://<raspberry-pi-ip>:8080
+```
+
+Важно: браузер не читает UDP напрямую. `web_dashboard/server.py` принимает UDP и преобразует данные в форматы, которые понимает браузер:
+
+```text
+bbox UDP -> Server-Sent Events
+video UDP -> ffmpeg -> HLS
+```
+
+Для воспроизведения HLS в Chrome/Firefox страница использует `hls.js` из CDN. Если Raspberry Pi работает без доступа в интернет, видео может не открыться в этих браузерах, пока `hls.js` не будет сохранен локально. Bbox-панель работает без внешних зависимостей.
+
+Если нужно проверить только `bbox`, можно отключить video bridge:
+
+```bash
+python3 web_dashboard/server.py --no-video
+```
+
+`web_dashboard/server.py` и `udp_bbox_receiver.py` не могут одновременно слушать один и тот же `bbox` порт `5005`.
 
 ## Как работает основной цикл
 

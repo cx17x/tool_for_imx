@@ -18,7 +18,7 @@ systemd/imx-object-detection.service
 Основной сервис. Запускает:
 
 ```bash
-python3 object_detection.py --target-class person --udp-host 127.0.0.1 --udp-port 5005 --no-preview
+/home/pi/venv/bin/python object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --target-class person --udp-host 127.0.0.1 --udp-port 5005 --no-preview
 ```
 
 Этот вариант отправляет только `bbox` UDP на `127.0.0.1:5005`.
@@ -27,17 +27,17 @@ python3 object_detection.py --target-class person --udp-host 127.0.0.1 --udp-por
 systemd/imx-object-detection-video.service
 ```
 
-Вариант с видео. Запускает:
+Вариант с video UDP. Кодирует отдельный `lores` stream, чтобы не мешать основному IMX500 detection loop:
 
 ```bash
-python3 object_detection.py --target-class person --udp-host 127.0.0.1 --udp-port 5005 --video-udp --video-udp-host 127.0.0.1 --video-udp-port 5006 --no-preview
+/home/pi/venv/bin/python object_detection.py --model /home/qwerty/q_imx_model/rpk_out/network.rpk --labels /home/qwerty/q_imx_model/labels.txt --target-class person --udp-host 127.0.0.1 --udp-port 5005 --video-udp --video-stream lores --video-udp-host 127.0.0.1 --video-udp-port 5006 --no-preview --no-overlay
 ```
 
 Этот вариант отправляет:
 
 ```text
 127.0.0.1:5005/udp - bbox JSON
-127.0.0.1:5006/udp - video with bbox overlay
+127.0.0.1:5006/udp - video from lores stream
 ```
 
 Важно: не включайте одновременно `imx-object-detection.service` и `imx-object-detection-video.service`, потому что оба будут пытаться использовать камеру.
@@ -49,10 +49,30 @@ systemd/imx-bbox-receiver.service
 Отладочный receiver. Запускает:
 
 ```bash
-python3 udp_bbox_receiver.py --host 127.0.0.1 --port 5005
+/home/pi/venv/bin/python udp_bbox_receiver.py --host 127.0.0.1 --port 5005
 ```
 
 Для production его лучше заменить на настоящий `control_loop.py`.
+
+```text
+systemd/imx-web-dashboard.service
+```
+
+Web dashboard. Запускает:
+
+```bash
+/home/pi/venv/bin/python web_dashboard/server.py --host 0.0.0.0 --port 8080 --bbox-host 127.0.0.1 --bbox-port 5005 --video-host 127.0.0.1 --video-port 5006
+```
+
+Dashboard принимает `bbox` UDP и video UDP, а в браузер отдает:
+
+```text
+http://<raspberry-pi-ip>:8080
+```
+
+Важно: `imx-web-dashboard.service` и `imx-bbox-receiver.service` оба слушают `127.0.0.1:5005`, поэтому их нельзя запускать одновременно без изменения портов.
+
+Для HLS-видео в Chrome/Firefox frontend использует `hls.js` из CDN. Если устройство работает без доступа в интернет, bbox-панель останется рабочей, но для видео нужно будет положить `hls.js` локально.
 
 ```text
 scripts/install_systemd_services.sh
@@ -63,6 +83,14 @@ scripts/install_systemd_services.sh
 ## Установка
 
 На Raspberry Pi из корня проекта:
+
+```bash
+./scripts/install_pi_dependencies.sh
+```
+
+Если сервисы запускаются из `/home/qwerty/venv`, этот venv должен видеть системные пакеты `picamera2` и `cv2`. Скрипт включает `include-system-site-packages = true` в `pyvenv.cfg`.
+
+Затем установить сервисы:
 
 ```bash
 ./scripts/install_systemd_services.sh
@@ -86,11 +114,32 @@ pi
 PROJECT_DIR=/path/to/tool_for_imx SERVICE_USER=myuser ./scripts/install_systemd_services.sh
 ```
 
+По умолчанию сервисы запускают Python из:
+
+```text
+/home/<SERVICE_USER>/venv/bin/python
+```
+
+Если virtualenv находится в другом месте:
+
+```bash
+PROJECT_DIR=/path/to/tool_for_imx SERVICE_USER=myuser VENV_DIR=/path/to/venv ./scripts/install_systemd_services.sh
+```
+
+Если модель `.rpk` или labels находятся в другом месте:
+
+```bash
+PROJECT_DIR=/path/to/tool_for_imx SERVICE_USER=myuser VENV_DIR=/path/to/venv MODEL_PATH=/path/to/model.rpk LABELS_PATH=/path/to/labels.txt ./scripts/install_systemd_services.sh
+```
+
 Скрипт:
 
 - копирует unit-файлы в `/etc/systemd/system`;
 - подставляет `PROJECT_DIR`;
 - подставляет `SERVICE_USER`;
+- подставляет `VENV_DIR`;
+- подставляет `MODEL_PATH`;
+- подставляет `LABELS_PATH`;
 - выполняет `systemctl daemon-reload`.
 
 ## Запуск bbox-only сервиса
@@ -169,6 +218,32 @@ sudo journalctl -u imx-bbox-receiver.service -f
 
 ```bash
 sudo systemctl stop imx-bbox-receiver.service
+```
+
+## Web dashboard
+
+Включить dashboard:
+
+```bash
+sudo systemctl enable --now imx-web-dashboard.service
+```
+
+Открыть в браузере:
+
+```text
+http://<raspberry-pi-ip>:8080
+```
+
+Логи:
+
+```bash
+sudo journalctl -u imx-web-dashboard.service -f
+```
+
+Остановить:
+
+```bash
+sudo systemctl stop imx-web-dashboard.service
 ```
 
 ## Частые команды

@@ -13,7 +13,7 @@ SOURCE_KEY_FILE = None
 SOURCE_REMOTE_FOLDER = "/home/ubc/naburov/ValiantTrain/train/drone_mix_20260317_201433/weights/int8_compare/q_imx_model/"
 # /home/ubc/naburov/ValiantTrain/quantization/imx_rpk/runs/run_20260325_225715/artifacts/q_imx_model/q_imx_model.rpk
 
-DEST_HOST = "192.168.1.210"
+DEST_HOST = "192.168.1.108"
 DEST_USER = "qwerty"
 DEST_PORT = None
 DEST_KEY_FILE = None

@@ -6,7 +6,7 @@ class VideoUdpStreamer:
         self.encoder = None
         self.output = None
 
-    def start(self, picam2, stream_name="main"):
+    def start(self, picam2, stream_name="lores"):
         from picamera2.encoders import H264Encoder
         from picamera2.outputs import FfmpegOutput
 
