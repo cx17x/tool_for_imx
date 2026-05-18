@@ -11,6 +11,22 @@ from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_dete
 last_detections = []
 
 
+def get_label_for_category(category):
+    labels = get_labels()
+    category_index = int(category)
+    if 0 <= category_index < len(labels):
+        return labels[category_index]
+    return str(category_index)
+
+
+def matches_target_class(category):
+    target_class = args.target_class
+    if not target_class or target_class.lower() == "all":
+        return True
+
+    return get_label_for_category(category).lower() == target_class.lower()
+
+
 class Detection:
     def __init__(self, coords, category, conf, metadata):
         """Create a Detection object, recording the bounding box, category and confidence."""
@@ -47,9 +63,19 @@ def parse_detections(metadata: dict):
         if bbox_order == "xy":
             boxes = boxes[:, [1, 0, 3, 2]]
 
-    last_detections = [
-        Detection(box, category, score, metadata) for box, score, category in zip(boxes, scores, classes) if score > threshold
-    ]
+    last_detections = []
+    for box, score, category in zip(boxes, scores, classes):
+        if score <= threshold or not matches_target_class(category):
+            continue
+
+        detection = Detection(box, category, score, metadata)
+        last_detections.append(detection)
+
+        if args.print_detections:
+            label = get_label_for_category(category)
+            x, y, w, h = detection.box
+            print(f"{label}: conf={score:.2f}, box=({x}, {y}, {w}, {h})")
+
     return last_detections
 
 
@@ -71,7 +97,7 @@ def draw_detections(request, stream="main"):
     with MappedArray(request, stream) as m:
         for detection in detections:
             x, y, w, h = detection.box
-            label = f"{labels[int(detection.category)]} ({detection.conf:.2f})"
+            label = f"{get_label_for_category(detection.category)} ({detection.conf:.2f})"
 
             # Calculate text size and position
             (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -131,6 +157,13 @@ def get_args():
         help="preserve the pixel aspect ratio of the input tensor",
     )
     parser.add_argument("--labels", type=str, help="Path to the labels file")
+    parser.add_argument(
+        "--target-class",
+        type=str,
+        default="person",
+        help="Only show detections for this class label. Use 'all' to show every class.",
+    )
+    parser.add_argument("--print-detections", action="store_true", help="Print matching detections to stdout")
     parser.add_argument("--print-intrinsics", action="store_true", help="Print JSON network_intrinsics then exit")
     return parser.parse_args()
 
