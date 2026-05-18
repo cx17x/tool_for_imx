@@ -124,11 +124,95 @@ config = picam2.create_preview_configuration(
 
 Пустое сообщение позволяет управляющему контуру отличать ситуацию "цель не найдена" от ситуации "данные вообще не приходят".
 
+## Два UDP-потока
+
+Можно разделить выходы на два независимых UDP-потока:
+
+```text
+IMX500 / Picamera2
+  |
+  +--> metadata
+  |      |
+  |      +--> parse_detections()
+  |              |
+  |              +--> UDP 127.0.0.1:5005
+  |                   machine-readable bbox stream
+  |
+  +--> video frame
+         |
+         +--> draw_detections()
+                 |
+                 +--> UDP 127.0.0.1:5006
+                      human/debug video stream with bbox overlay
+```
+
+Рекомендуемое разделение портов:
+
+```text
+127.0.0.1:5005/udp - bbox coordinates
+127.0.0.1:5006/udp - video with bbox overlay
+```
+
+`bbox` и видео лучше не смешивать в одном UDP-потоке, потому что у них разные требования:
+
+- `bbox` - маленькие сообщения, низкая задержка, нужны управляющему контуру;
+- видео - большой поток, требуется кодирование, возможна буферизация;
+- потеря одного видеопакета не должна ломать поток координат;
+- управляющий контур не должен извлекать координаты из картинки.
+
+## Видео с отрисованными bbox
+
+Видео можно отдавать уже с нарисованными рамками. В текущей архитектуре это естественно ложится на существующий `draw_detections()`:
+
+```text
+parse_detections()
+  |
+  +--> send bbox JSON over UDP
+  |
+  +--> last_results
+          |
+          +--> draw_detections()
+                  |
+                  +--> encoded video over UDP
+```
+
+Такой видеопоток нужен для просмотра, записи и отладки. Машинно-читаемый поток координат все равно должен оставаться отдельным.
+
+Видео не стоит отправлять как raw-кадры через UDP. Лучше использовать кодированный поток:
+
+- `H.264 + RTP`;
+- `H.264 + MPEG-TS over UDP`;
+- другой контейнер/протокол, если его требует принимающая сторона.
+
+Практическое назначение потоков:
+
+```text
+UDP 5005: bbox JSON for guidance/control
+UDP 5006: encoded video with bbox overlay for operator/debug
+```
+
+## Синхронизация bbox и видео
+
+Если принимающей стороне нужно сопоставлять bbox с конкретным моментом видео, в оба потока нужно добавлять timestamp.
+
+Для `bbox` timestamp должен быть частью JSON-сообщения:
+
+```json
+{
+  "ts": 1710000000.123,
+  "target_class": "person",
+  "detections": []
+}
+```
+
+Для видео timestamp зависит от выбранного способа передачи. Если используется RTP, можно опираться на RTP timestamp. Если используется MPEG-TS или другой простой UDP-поток, нужно отдельно решить, как принимающая сторона будет соотносить видео и координаты.
+
 ## Предлагаемая структура файлов
 
 ```text
 object_detection.py
 detection_udp.py
+video_udp_streamer.py
 udp_bbox_receiver.py
 docs/
   object_detection_architecture.md
@@ -138,6 +222,7 @@ docs/
 
 - `object_detection.py` - камера, inference, фильтрация класса, отрисовка и главный цикл;
 - `detection_udp.py` - UDP publisher для bbox;
+- `video_udp_streamer.py` - кодирование и отправка видео с overlay по UDP;
 - `udp_bbox_receiver.py` - простой тестовый приемник UDP, опционально;
 - `docs/object_detection_architecture.md` - описание архитектуры и решений.
 
@@ -177,3 +262,4 @@ norm_y = center_y / frame_height
 2. Добавить в `object_detection.py` аргументы `--udp-host`, `--udp-port`, `--no-udp`.
 3. После `parse_detections()` отправлять текущий список bbox через publisher.
 4. Добавить `udp_bbox_receiver.py` для локальной проверки.
+5. Добавить отправку видео с overlay отдельным UDP-потоком.
