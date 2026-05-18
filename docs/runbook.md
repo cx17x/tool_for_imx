@@ -177,10 +177,15 @@ python3 object_detection.py
 {
   "ts": 1710000000.123,
   "target_class": "person",
+  "image": {
+    "width": 640,
+    "height": 480
+  },
   "detections": [
     {
       "label": "person",
       "conf": 0.82,
+      "track_id": 1,
       "bbox": {
         "x": 120,
         "y": 80,
@@ -190,11 +195,23 @@ python3 object_detection.py
       "center": {
         "x": 152,
         "y": 170
+      },
+      "bbox_yolo": {
+        "x": 0.1875,
+        "y": 0.1666666667,
+        "w": 0.1,
+        "h": 0.375
+      },
+      "center_yolo": {
+        "x": 0.2375,
+        "y": 0.3541666667
       }
     }
   ]
 }
 ```
+
+`bbox` и `center` остаются в пикселях. Для управления лучше использовать нормализованные поля `bbox_yolo` и `center_yolo`: значения всегда в диапазоне `0..1`, где `x/w` нормализуются на ширину изображения, а `y/h` на высоту.
 
 Если цели нет, отправляется пустой список:
 
@@ -223,16 +240,34 @@ python3 object_detection.py --target-class all
 Изменить threshold:
 
 ```bash
-python3 object_detection.py --threshold 0.3
+python3 object_detection.py --threshold 0.6
 ```
 
-Изменить сглаживание bbox:
+Изменить трекинг bbox:
 
 ```bash
-python3 object_detection.py --bbox-smoothing-alpha 0.75
+python3 object_detection.py --tracker --tracker-iou-threshold 0.2 --tracker-max-missed 2
 ```
 
-`0` отключает сглаживание. Чем меньше значение, тем плавнее bbox и тем больше визуальная задержка. Чем ближе к `1`, тем быстрее bbox реагирует на новые detections.
+Трекер сопоставляет detections между кадрами по IoU и ведет bbox через Kalman filter. В UDP у detection появляются поля `track_id` и, если кадр предсказан без свежего detection, `predicted: true`.
+
+Основные параметры:
+
+```bash
+python3 object_detection.py \
+  --tracker-iou-threshold 0.2 \
+  --tracker-max-missed 2 \
+  --tracker-process-noise 4.0 \
+  --tracker-measurement-noise 30.0
+```
+
+Если рамка запаздывает, увеличьте `--tracker-process-noise`. Если рамка дрожит, увеличьте `--tracker-measurement-noise`. Если рамка слишком долго живет после пропажи объекта, уменьшите `--tracker-max-missed`.
+
+Отключить трекер и вернуться к простому EMA-сглаживанию:
+
+```bash
+python3 object_detection.py --no-tracker --bbox-smoothing-alpha 0.75
+```
 
 Изменить UDP destination для bbox:
 
@@ -293,7 +328,11 @@ MJPEG port: 8081
 JPEG quality: 75
 bbox normalization: enabled
 bbox order: xy
-bbox smoothing alpha: 0.75
+tracker: enabled
+tracker IoU threshold: 0.2
+tracker max missed frames: 2
+Kalman process noise: 4.0
+Kalman measurement noise: 30.0
 ```
 
 HLS/video UDP можно оставить как fallback/debug, но он имеет большую задержку.

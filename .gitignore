@@ -1,2 +1,6 @@
 __pycache__/
 _transfer_work/
+transfer_folder.py
+venv/
+.venv/
+env/

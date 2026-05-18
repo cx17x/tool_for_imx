@@ -3,6 +3,7 @@ import sys
 from functools import lru_cache
 
 import cv2
+import numpy as np
 
 from detection_udp import DetectionUdpPublisher
 from mjpeg_streamer import MjpegStreamer
@@ -15,6 +16,7 @@ last_detections = []
 detections_updated = False
 mjpeg_streamer = None
 smoothed_boxes = {}
+bbox_tracker = None
 
 
 def get_label_for_category(category):
@@ -34,11 +36,200 @@ def matches_target_class(category):
 
 
 class Detection:
-    def __init__(self, coords, category, conf, metadata):
+    def __init__(self, coords, category, conf, metadata=None, box=None, track_id=None, predicted=False):
         """Create a Detection object, recording the bounding box, category and confidence."""
         self.category = category
         self.conf = conf
-        self.box = imx500.convert_inference_coords(coords, metadata, picam2)
+        self.track_id = track_id
+        self.predicted = predicted
+        if box is None:
+            self.box = imx500.convert_inference_coords(coords, metadata, picam2)
+        else:
+            self.box = box
+
+
+def box_to_center(box):
+    x, y, w, h = box
+    return np.array([x + w / 2.0, y + h / 2.0, w, h], dtype=np.float32)
+
+
+def center_to_box(center):
+    cx, cy, w, h = center
+    w = max(float(w), 1.0)
+    h = max(float(h), 1.0)
+    return (cx - w / 2.0, cy - h / 2.0, w, h)
+
+
+def sanitize_box(box):
+    x, y, w, h = box
+    w = max(float(w), 1.0)
+    h = max(float(h), 1.0)
+    return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
+
+
+def bbox_iou(box_a, box_b):
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = bx + bw, by + bh
+
+    inter_x1 = max(ax, bx)
+    inter_y1 = max(ay, by)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    intersection = inter_w * inter_h
+    union = aw * ah + bw * bh - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+class BboxKalmanFilter:
+    def __init__(self, box, process_noise, measurement_noise):
+        self.state = np.zeros((8, 1), dtype=np.float32)
+        self.state[:4, 0] = box_to_center(box)
+
+        self.transition = np.eye(8, dtype=np.float32)
+        for i in range(4):
+            self.transition[i, i + 4] = 1.0
+
+        self.measurement = np.zeros((4, 8), dtype=np.float32)
+        self.measurement[:4, :4] = np.eye(4, dtype=np.float32)
+
+        self.covariance = np.eye(8, dtype=np.float32) * 20.0
+        self.process_noise = np.eye(8, dtype=np.float32) * process_noise
+        self.measurement_noise = np.eye(4, dtype=np.float32) * measurement_noise
+
+    def predict(self):
+        self.state = self.transition @ self.state
+        self.covariance = self.transition @ self.covariance @ self.transition.T + self.process_noise
+        return sanitize_box(center_to_box(self.state[:4, 0]))
+
+    def update(self, box):
+        measurement = box_to_center(box).reshape(4, 1)
+        innovation = measurement - self.measurement @ self.state
+        innovation_covariance = (
+            self.measurement @ self.covariance @ self.measurement.T + self.measurement_noise
+        )
+        gain = self.covariance @ self.measurement.T @ np.linalg.inv(innovation_covariance)
+        self.state = self.state + gain @ innovation
+        identity = np.eye(8, dtype=np.float32)
+        self.covariance = (identity - gain @ self.measurement) @ self.covariance
+        return sanitize_box(center_to_box(self.state[:4, 0]))
+
+
+class BboxTrack:
+    def __init__(self, track_id, detection, process_noise, measurement_noise):
+        self.id = track_id
+        self.category = detection.category
+        self.conf = float(detection.conf)
+        self.missed = 0
+        self.age = 0
+        self.predicted_box = detection.box
+        self.box_filter = BboxKalmanFilter(detection.box, process_noise, measurement_noise)
+
+    def predict(self):
+        self.age += 1
+        self.predicted_box = self.box_filter.predict()
+        return self.predicted_box
+
+    def update(self, detection):
+        self.missed = 0
+        self.category = detection.category
+        self.conf = float(detection.conf)
+        self.predicted_box = self.box_filter.update(detection.box)
+
+    def mark_missed(self, confidence_decay):
+        self.missed += 1
+        self.conf *= confidence_decay
+
+    def to_detection(self):
+        return Detection(
+            coords=None,
+            category=self.category,
+            conf=self.conf,
+            box=self.predicted_box,
+            track_id=self.id,
+            predicted=self.missed > 0,
+        )
+
+
+class BboxTracker:
+    def __init__(self, iou_threshold, max_missed, process_noise, measurement_noise, confidence_decay):
+        self.iou_threshold = iou_threshold
+        self.max_missed = max_missed
+        self.process_noise = process_noise
+        self.measurement_noise = measurement_noise
+        self.confidence_decay = confidence_decay
+        self.next_track_id = 1
+        self.tracks = []
+
+    def update(self, detections):
+        original_track_count = len(self.tracks)
+        for track in self.tracks:
+            track.predict()
+
+        matches = []
+        used_tracks = set()
+        used_detections = set()
+        candidates = []
+
+        for track_index, track in enumerate(self.tracks):
+            for detection_index, detection in enumerate(detections):
+                if int(track.category) != int(detection.category):
+                    continue
+                iou = bbox_iou(track.predicted_box, detection.box)
+                if iou >= self.iou_threshold:
+                    candidates.append((iou, track_index, detection_index))
+
+        for _, track_index, detection_index in sorted(candidates, reverse=True):
+            if track_index in used_tracks or detection_index in used_detections:
+                continue
+            matches.append((track_index, detection_index))
+            used_tracks.add(track_index)
+            used_detections.add(detection_index)
+
+        for track_index, detection_index in matches:
+            self.tracks[track_index].update(detections[detection_index])
+
+        for detection_index, detection in enumerate(detections):
+            if detection_index in used_detections:
+                continue
+            self.tracks.append(self._new_track(detection))
+
+        active_tracks = []
+        for track_index, track in enumerate(self.tracks):
+            if track_index < original_track_count and track_index not in used_tracks:
+                track.mark_missed(self.confidence_decay)
+            if track.missed <= self.max_missed:
+                active_tracks.append(track)
+
+        self.tracks = active_tracks
+        return [track.to_detection() for track in self.tracks]
+
+    def _new_track(self, detection):
+        track = BboxTrack(
+            self.next_track_id,
+            detection,
+            self.process_noise,
+            self.measurement_noise,
+        )
+        self.next_track_id += 1
+        return track
+
+
+def track_detections(detections):
+    if bbox_tracker is None:
+        return detections
+    return bbox_tracker.update(detections)
+
+
+def get_main_stream_size():
+    config = picam2.camera_configuration()
+    width, height = config["main"]["size"]
+    return width, height
 
 
 def smooth_detections(detections):
@@ -121,7 +312,10 @@ def parse_detections(metadata: dict):
             x, y, w, h = detection.box
             print(f"{label}: conf={score:.2f}, box=({x}, {y}, {w}, {h})")
 
-    last_detections = smooth_detections(last_detections)
+    if args.tracker:
+        last_detections = track_detections(last_detections)
+    else:
+        last_detections = smooth_detections(last_detections)
     return last_detections
 
 
@@ -142,6 +336,10 @@ def draw_detections(request, stream="main"):
             for detection in detections:
                 x, y, w, h = detection.box
                 label = f"{get_label_for_category(detection.category)} ({detection.conf:.2f})"
+                if detection.track_id is not None:
+                    label = f"#{detection.track_id} {label}"
+                if detection.predicted:
+                    label = f"{label} pred"
 
                 # Calculate text size and position
                 (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -200,6 +398,17 @@ def get_args():
         default=0.35,
         help="EMA smoothing factor for bbox coordinates. 0 disables smoothing, higher values react faster.",
     )
+    parser.add_argument(
+        "--tracker",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable IoU track assignment with Kalman bbox prediction.",
+    )
+    parser.add_argument("--tracker-iou-threshold", type=float, default=0.2, help="Minimum IoU for matching detections to tracks")
+    parser.add_argument("--tracker-max-missed", type=int, default=4, help="Keep predicting a track for this many missed frames")
+    parser.add_argument("--tracker-process-noise", type=float, default=4.0, help="Kalman process noise for bbox tracking")
+    parser.add_argument("--tracker-measurement-noise", type=float, default=30.0, help="Kalman measurement noise for bbox tracking")
+    parser.add_argument("--tracker-confidence-decay", type=float, default=0.85, help="Confidence decay per predicted-only frame")
     parser.add_argument("--iou", type=float, default=0.65, help="Set iou threshold")
     parser.add_argument("--max-detections", type=int, default=10, help="Set max detections")
     parser.add_argument("--ignore-dash-labels", action=argparse.BooleanOptionalAction, help="Remove '-' labels ")
@@ -246,6 +455,27 @@ if __name__ == "__main__":
     if not 0.0 <= args.bbox_smoothing_alpha <= 1.0:
         print("--bbox-smoothing-alpha must be between 0 and 1", file=sys.stderr)
         exit(2)
+    if not 0.0 <= args.tracker_iou_threshold <= 1.0:
+        print("--tracker-iou-threshold must be between 0 and 1", file=sys.stderr)
+        exit(2)
+    if args.tracker_max_missed < 0:
+        print("--tracker-max-missed must be >= 0", file=sys.stderr)
+        exit(2)
+    if args.tracker_process_noise <= 0 or args.tracker_measurement_noise <= 0:
+        print("--tracker-process-noise and --tracker-measurement-noise must be > 0", file=sys.stderr)
+        exit(2)
+    if not 0.0 <= args.tracker_confidence_decay <= 1.0:
+        print("--tracker-confidence-decay must be between 0 and 1", file=sys.stderr)
+        exit(2)
+
+    if args.tracker:
+        bbox_tracker = BboxTracker(
+            args.tracker_iou_threshold,
+            args.tracker_max_missed,
+            args.tracker_process_noise,
+            args.tracker_measurement_noise,
+            args.tracker_confidence_decay,
+        )
 
     # This must be called before instantiation of Picamera2
     imx500 = IMX500(args.model)
@@ -320,7 +550,7 @@ if __name__ == "__main__":
         while True:
             last_results = parse_detections(picam2.capture_metadata())
             if udp_publisher is not None and detections_updated:
-                udp_publisher.send(last_results, args.target_class, get_label_for_category)
+                udp_publisher.send(last_results, args.target_class, get_label_for_category, get_main_stream_size())
     except KeyboardInterrupt:
         pass
     finally:
