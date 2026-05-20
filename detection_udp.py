@@ -69,4 +69,12 @@ class DetectionUdpPublisher:
             payload["track_id"] = int(detection.track_id)
         if getattr(detection, "predicted", False):
             payload["predicted"] = True
+        motion_vector = getattr(detection, "motion_vector", None)
+        if motion_vector is not None:
+            vx, vy = motion_vector
+            payload["motion_vector"] = {
+                "vx": float(vx),
+                "vy": float(vy),
+                "speed": float((vx * vx + vy * vy) ** 0.5),
+            }
         return payload

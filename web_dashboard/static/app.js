@@ -35,6 +35,7 @@ function renderBbox(payload) {
       card.className = "detection";
       const bbox = item.bbox || {};
       const center = item.center || {};
+      const motion = item.motion_vector || {};
       card.innerHTML = `
         <div class="detection-title">
           <strong>${index + 1}. ${item.label || "-"}</strong>
@@ -47,6 +48,9 @@ function renderBbox(payload) {
           <span>h</span><b>${bbox.h ?? "-"}</b>
           <span>cx</span><b>${center.x ?? "-"}</b>
           <span>cy</span><b>${center.y ?? "-"}</b>
+          <span>vx</span><b>${motion.vx == null ? "-" : Number(motion.vx).toFixed(1)}</b>
+          <span>vy</span><b>${motion.vy == null ? "-" : Number(motion.vy).toFixed(1)}</b>
+          <span>speed</span><b>${motion.speed == null ? "-" : Number(motion.speed).toFixed(1)}</b>
         </div>
       `;
       return card;

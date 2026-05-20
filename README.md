@@ -5,7 +5,7 @@
 Он делает три основные вещи:
 
 - запускает `Picamera2` + IMX500 model inference;
-- фильтрует detections по классу, сейчас по умолчанию `person`;
+- фильтрует detections по классу, сейчас сервис настроен на `airplane`;
 - отдает координаты `bbox` по UDP и видео с отрисованными рамками через MJPEG/web dashboard.
 
 ## Текущая схема
@@ -89,19 +89,22 @@ object_detection.py \
   --labels /home/qwerty/q_imx_model/labels.txt \
   --bbox-normalization \
   --bbox-order xy \
-  --threshold 0.6 \
+  --threshold 0.10 \
+  --iou 0.45 \
   --tracker \
   --tracker-iou-threshold 0.2 \
   --tracker-max-missed 2 \
   --tracker-process-noise 4.0 \
   --tracker-measurement-noise 30.0 \
-  --target-class person \
+  --target-class airplane \
   --udp-host 127.0.0.1 \
   --udp-port 5005 \
+  --main-width 640 \
+  --main-height 640 \
   --mjpeg \
   --mjpeg-host 0.0.0.0 \
   --mjpeg-port 8081 \
-  --mjpeg-quality 75 \
+  --mjpeg-quality 90 \
   --no-preview
 ```
 
@@ -112,7 +115,7 @@ object_detection.py \
 ```json
 {
   "ts": 1710000000.123,
-  "target_class": "person",
+  "target_class": "airplane",
   "image": {
     "width": 640,
     "height": 480
@@ -120,7 +123,7 @@ object_detection.py \
   "detections": [
     {
       "track_id": 1,
-      "label": "person",
+      "label": "airplane",
       "conf": 0.82,
       "bbox": {"x": 120, "y": 80, "w": 64, "h": 180},
       "center": {"x": 152, "y": 170},

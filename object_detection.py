@@ -36,12 +36,23 @@ def matches_target_class(category):
 
 
 class Detection:
-    def __init__(self, coords, category, conf, metadata=None, box=None, track_id=None, predicted=False):
+    def __init__(
+        self,
+        coords,
+        category,
+        conf,
+        metadata=None,
+        box=None,
+        track_id=None,
+        predicted=False,
+        motion_vector=None,
+    ):
         """Create a Detection object, recording the bounding box, category and confidence."""
         self.category = category
         self.conf = conf
         self.track_id = track_id
         self.predicted = predicted
+        self.motion_vector = motion_vector
         if box is None:
             self.box = imx500.convert_inference_coords(coords, metadata, picam2)
         else:
@@ -119,6 +130,10 @@ class BboxKalmanFilter:
         self.covariance = (identity - gain @ self.measurement) @ self.covariance
         return sanitize_box(center_to_box(self.state[:4, 0]))
 
+    def velocity(self):
+        vx, vy = self.state[4:6, 0]
+        return float(vx), float(vy)
+
 
 class BboxTrack:
     def __init__(self, track_id, detection, process_noise, measurement_noise):
@@ -153,6 +168,7 @@ class BboxTrack:
             box=self.predicted_box,
             track_id=self.id,
             predicted=self.missed > 0,
+            motion_vector=self.box_filter.velocity(),
         )
 
 
@@ -367,6 +383,23 @@ def draw_detections(request, stream="main"):
                 # Draw detection box
                 cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0, 0), thickness=2)
 
+                if args.motion_vector and detection.motion_vector is not None:
+                    vx, vy = detection.motion_vector
+                    speed = float(np.hypot(vx, vy))
+                    if speed >= args.motion_vector_min_speed:
+                        center_x = int(round(x + w / 2))
+                        center_y = int(round(y + h / 2))
+                        end_x = int(round(center_x + vx * args.motion_vector_scale))
+                        end_y = int(round(center_y + vy * args.motion_vector_scale))
+                        cv2.arrowedLine(
+                            m.array,
+                            (center_x, center_y),
+                            (end_x, end_y),
+                            (255, 255, 0, 0),
+                            thickness=2,
+                            tipLength=0.25,
+                        )
+
         if not args.no_overlay and intrinsics.preserve_aspect_ratio:
             b_x, b_y, b_w, b_h = imx500.get_roi_scaled(request)
             color = (255, 0, 0)  # red
@@ -409,6 +442,9 @@ def get_args():
     parser.add_argument("--tracker-process-noise", type=float, default=4.0, help="Kalman process noise for bbox tracking")
     parser.add_argument("--tracker-measurement-noise", type=float, default=30.0, help="Kalman measurement noise for bbox tracking")
     parser.add_argument("--tracker-confidence-decay", type=float, default=0.85, help="Confidence decay per predicted-only frame")
+    parser.add_argument("--motion-vector", action=argparse.BooleanOptionalAction, default=True, help="Draw and publish bbox center motion vectors")
+    parser.add_argument("--motion-vector-scale", type=float, default=5.0, help="Scale factor for drawing motion vectors in pixels per frame")
+    parser.add_argument("--motion-vector-min-speed", type=float, default=0.2, help="Minimum pixels per frame before drawing a motion vector")
     parser.add_argument("--iou", type=float, default=0.65, help="Set iou threshold")
     parser.add_argument("--max-detections", type=int, default=10, help="Set max detections")
     parser.add_argument("--ignore-dash-labels", action=argparse.BooleanOptionalAction, help="Remove '-' labels ")
@@ -446,6 +482,8 @@ def get_args():
     parser.add_argument("--mjpeg-host", type=str, default="0.0.0.0", help="MJPEG HTTP host")
     parser.add_argument("--mjpeg-port", type=int, default=8081, help="MJPEG HTTP port")
     parser.add_argument("--mjpeg-quality", type=int, default=75, help="MJPEG JPEG quality")
+    parser.add_argument("--main-width", type=int, default=640, help="Main output stream width")
+    parser.add_argument("--main-height", type=int, default=480, help="Main output stream height")
     parser.add_argument("--print-intrinsics", action="store_true", help="Print JSON network_intrinsics then exit")
     return parser.parse_args()
 
@@ -464,8 +502,17 @@ if __name__ == "__main__":
     if args.tracker_process_noise <= 0 or args.tracker_measurement_noise <= 0:
         print("--tracker-process-noise and --tracker-measurement-noise must be > 0", file=sys.stderr)
         exit(2)
+    if args.main_width <= 0 or args.main_height <= 0:
+        print("--main-width and --main-height must be > 0", file=sys.stderr)
+        exit(2)
     if not 0.0 <= args.tracker_confidence_decay <= 1.0:
         print("--tracker-confidence-decay must be between 0 and 1", file=sys.stderr)
+        exit(2)
+    if args.motion_vector_scale < 0:
+        print("--motion-vector-scale must be >= 0", file=sys.stderr)
+        exit(2)
+    if args.motion_vector_min_speed < 0:
+        print("--motion-vector-min-speed must be >= 0", file=sys.stderr)
         exit(2)
 
     if args.tracker:
@@ -512,9 +559,10 @@ if __name__ == "__main__":
         print(f"Serving MJPEG on http://{args.mjpeg_host}:{args.mjpeg_port}/mjpeg")
 
     picam2 = Picamera2(imx500.camera_num)
+    main_stream = {"size": (args.main_width, args.main_height), "format": "XBGR8888"}
     if args.video_udp:
         config = picam2.create_preview_configuration(
-            main={"size": (640, 480), "format": "XBGR8888"},
+            main=main_stream,
             lores={"size": (480, 360), "format": "YUV420"},
             controls={"FrameRate": intrinsics.inference_rate},
             buffer_count=12,
@@ -522,7 +570,11 @@ if __name__ == "__main__":
             encode=args.video_stream,
         )
     else:
-        config = picam2.create_preview_configuration(controls={"FrameRate": intrinsics.inference_rate}, buffer_count=12)
+        config = picam2.create_preview_configuration(
+            main=main_stream,
+            controls={"FrameRate": intrinsics.inference_rate},
+            buffer_count=12,
+        )
 
     imx500.show_network_fw_progress_bar()
     picam2.configure(config)
