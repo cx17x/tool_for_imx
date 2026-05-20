@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>IMX500 Config</title>
+    <link rel="stylesheet" href="/style.css?v=4">
+  </head>
+  <body>
+    <main class="config-page">
+      <header class="config-topbar">
+        <div>
+          <h1>IMX500 Config</h1>
+          <p id="configPath">Loading config...</p>
+        </div>
+        <nav>
+          <a class="button-link" href="/">Dashboard</a>
+        </nav>
+      </header>
+
+      <section class="panel admin-panel">
+        <div class="panel-header">
+          <h2>Admin</h2>
+          <div id="apiStatus" class="status status-waiting">loading</div>
+        </div>
+        <div class="form-grid">
+          <label class="field field-wide">
+            <span>Admin token</span>
+            <input id="adminToken" type="password" autocomplete="current-password">
+          </label>
+        </div>
+      </section>
+
+      <form id="configForm" class="config-form"></form>
+
+      <section class="config-actions">
+        <button id="validateButton" type="button">Validate</button>
+        <button id="applyButton" type="button" class="primary">Apply and restart</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Result</h2>
+        </div>
+        <pre id="resultOutput">{}</pre>
+      </section>
+    </main>
+
+    <script src="/config.js?v=1"></script>
+  </body>
+</html>

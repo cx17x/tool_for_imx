@@ -1,10 +1,12 @@
 import argparse
+import json
 import sys
 from functools import lru_cache
 
 import cv2
 import numpy as np
 
+from detection_config import DEFAULT_DETECTION_CONFIG, load_detection_config, validate_detection_config
 from detection_udp import DetectionUdpPublisher
 from mjpeg_streamer import MjpegStreamer
 from picamera2 import MappedArray, Picamera2
@@ -410,43 +412,52 @@ def draw_detections(request, stream="main"):
             mjpeg_streamer.publish(m.array)
 
 
-def get_args():
+def build_arg_parser(defaults):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, help="Path to JSON detection config")
     parser.add_argument(
         "--model",
         type=str,
         help="Path of the model",
-        default="/home/qwerty/q_imx_model/rpk_out/network.rpk",
+        default=defaults["model"],
     )
     parser.add_argument("--fps", type=int, help="Frames per second")
-    parser.add_argument("--bbox-normalization", action=argparse.BooleanOptionalAction, help="Normalize bbox")
-    parser.add_argument("--bbox-scale", type=float, default=1.0, help="Scale raw bbox output before normalization")
     parser.add_argument(
-        "--bbox-order", choices=["yx", "xy"], default="yx", help="Set bbox order yx -> (y0, x0, y1, x1) xy -> (x0, y0, x1, y1)"
+        "--bbox-normalization",
+        action=argparse.BooleanOptionalAction,
+        default=defaults["bbox_normalization"],
+        help="Normalize bbox",
     )
-    parser.add_argument("--threshold", type=float, default=0.55, help="Detection threshold")
+    parser.add_argument("--bbox-scale", type=float, default=defaults["bbox_scale"], help="Scale raw bbox output before normalization")
+    parser.add_argument(
+        "--bbox-order",
+        choices=["yx", "xy"],
+        default=defaults["bbox_order"],
+        help="Set bbox order yx -> (y0, x0, y1, x1) xy -> (x0, y0, x1, y1)",
+    )
+    parser.add_argument("--threshold", type=float, default=defaults["threshold"], help="Detection threshold")
     parser.add_argument(
         "--bbox-smoothing-alpha",
         type=float,
-        default=0.35,
+        default=defaults["bbox_smoothing_alpha"],
         help="EMA smoothing factor for bbox coordinates. 0 disables smoothing, higher values react faster.",
     )
     parser.add_argument(
         "--tracker",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=defaults["tracker"],
         help="Enable IoU track assignment with Kalman bbox prediction.",
     )
-    parser.add_argument("--tracker-iou-threshold", type=float, default=0.2, help="Minimum IoU for matching detections to tracks")
-    parser.add_argument("--tracker-max-missed", type=int, default=4, help="Keep predicting a track for this many missed frames")
-    parser.add_argument("--tracker-process-noise", type=float, default=4.0, help="Kalman process noise for bbox tracking")
-    parser.add_argument("--tracker-measurement-noise", type=float, default=30.0, help="Kalman measurement noise for bbox tracking")
-    parser.add_argument("--tracker-confidence-decay", type=float, default=0.85, help="Confidence decay per predicted-only frame")
-    parser.add_argument("--motion-vector", action=argparse.BooleanOptionalAction, default=True, help="Draw and publish bbox center motion vectors")
-    parser.add_argument("--motion-vector-scale", type=float, default=5.0, help="Scale factor for drawing motion vectors in pixels per frame")
-    parser.add_argument("--motion-vector-min-speed", type=float, default=0.2, help="Minimum pixels per frame before drawing a motion vector")
-    parser.add_argument("--iou", type=float, default=0.65, help="Set iou threshold")
-    parser.add_argument("--max-detections", type=int, default=10, help="Set max detections")
+    parser.add_argument("--tracker-iou-threshold", type=float, default=defaults["tracker_iou_threshold"], help="Minimum IoU for matching detections to tracks")
+    parser.add_argument("--tracker-max-missed", type=int, default=defaults["tracker_max_missed"], help="Keep predicting a track for this many missed frames")
+    parser.add_argument("--tracker-process-noise", type=float, default=defaults["tracker_process_noise"], help="Kalman process noise for bbox tracking")
+    parser.add_argument("--tracker-measurement-noise", type=float, default=defaults["tracker_measurement_noise"], help="Kalman measurement noise for bbox tracking")
+    parser.add_argument("--tracker-confidence-decay", type=float, default=defaults["tracker_confidence_decay"], help="Confidence decay per predicted-only frame")
+    parser.add_argument("--motion-vector", action=argparse.BooleanOptionalAction, default=defaults["motion_vector"], help="Draw and publish bbox center motion vectors")
+    parser.add_argument("--motion-vector-scale", type=float, default=defaults["motion_vector_scale"], help="Scale factor for drawing motion vectors in pixels per frame")
+    parser.add_argument("--motion-vector-min-speed", type=float, default=defaults["motion_vector_min_speed"], help="Minimum pixels per frame before drawing a motion vector")
+    parser.add_argument("--iou", type=float, default=defaults["iou"], help="Set iou threshold")
+    parser.add_argument("--max-detections", type=int, default=defaults["max_detections"], help="Set max detections")
     parser.add_argument("--ignore-dash-labels", action=argparse.BooleanOptionalAction, help="Remove '-' labels ")
     parser.add_argument("--postprocess", choices=["", "nanodet"], default=None, help="Run post process of type")
     parser.add_argument(
@@ -455,17 +466,18 @@ def get_args():
         action=argparse.BooleanOptionalAction,
         help="preserve the pixel aspect ratio of the input tensor",
     )
-    parser.add_argument("--labels", type=str, default="/home/qwerty/q_imx_model/labels.txt", help="Path to the labels file")
+    parser.add_argument("--labels", type=str, default=defaults["labels"], help="Path to the labels file")
     parser.add_argument(
         "--target-class",
         type=str,
-        default="person",
+        default=defaults["target_class"],
         help="Only show detections for this class label. Use 'all' to show every class.",
     )
     parser.add_argument("--print-detections", action="store_true", help="Print matching detections to stdout")
-    parser.add_argument("--no-udp", action="store_true", help="Disable bbox UDP publishing")
-    parser.add_argument("--udp-host", type=str, default="127.0.0.1", help="BBox UDP destination host")
-    parser.add_argument("--udp-port", type=int, default=5005, help="BBox UDP destination port")
+    parser.add_argument("--no-udp", action="store_true", default=defaults["no_udp"], help="Disable bbox UDP publishing")
+    parser.add_argument("--udp", dest="no_udp", action="store_false", help="Enable bbox UDP publishing")
+    parser.add_argument("--udp-host", type=str, default=defaults["udp_host"], help="BBox UDP destination host")
+    parser.add_argument("--udp-port", type=int, default=defaults["udp_port"], help="BBox UDP destination port")
     parser.add_argument("--video-udp", action="store_true", help="Stream video with bbox overlay over UDP")
     parser.add_argument("--video-udp-host", type=str, default="127.0.0.1", help="Video UDP destination host")
     parser.add_argument("--video-udp-port", type=int, default=5006, help="Video UDP destination port")
@@ -476,20 +488,51 @@ def get_args():
         default="lores",
         help="Picamera2 stream to encode for video UDP. 'lores' is safer; 'main' can include overlay.",
     )
-    parser.add_argument("--no-preview", action="store_true", help="Disable local camera preview window")
-    parser.add_argument("--no-overlay", action="store_true", help="Disable drawing bbox overlay on the output frame")
-    parser.add_argument("--mjpeg", action="store_true", help="Serve MJPEG stream from the camera process")
-    parser.add_argument("--mjpeg-host", type=str, default="0.0.0.0", help="MJPEG HTTP host")
-    parser.add_argument("--mjpeg-port", type=int, default=8081, help="MJPEG HTTP port")
-    parser.add_argument("--mjpeg-quality", type=int, default=75, help="MJPEG JPEG quality")
-    parser.add_argument("--main-width", type=int, default=640, help="Main output stream width")
-    parser.add_argument("--main-height", type=int, default=480, help="Main output stream height")
+    parser.add_argument("--no-preview", action="store_true", default=defaults["no_preview"], help="Disable local camera preview window")
+    parser.add_argument("--preview", dest="no_preview", action="store_false", help="Enable local camera preview window")
+    parser.add_argument("--no-overlay", action="store_true", default=defaults["no_overlay"], help="Disable drawing bbox overlay on the output frame")
+    parser.add_argument("--overlay", dest="no_overlay", action="store_false", help="Enable drawing bbox overlay on the output frame")
+    parser.add_argument("--mjpeg", action=argparse.BooleanOptionalAction, default=defaults["mjpeg"], help="Serve MJPEG stream from the camera process")
+    parser.add_argument("--mjpeg-host", type=str, default=defaults["mjpeg_host"], help="MJPEG HTTP host")
+    parser.add_argument("--mjpeg-port", type=int, default=defaults["mjpeg_port"], help="MJPEG HTTP port")
+    parser.add_argument("--mjpeg-quality", type=int, default=defaults["mjpeg_quality"], help="MJPEG JPEG quality")
+    parser.add_argument("--main-width", type=int, default=defaults["main_width"], help="Main output stream width")
+    parser.add_argument("--main-height", type=int, default=defaults["main_height"], help="Main output stream height")
     parser.add_argument("--print-intrinsics", action="store_true", help="Print JSON network_intrinsics then exit")
-    return parser.parse_args()
+    return parser
+
+
+def get_args():
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=str)
+    config_args, _ = config_parser.parse_known_args()
+
+    defaults = dict(DEFAULT_DETECTION_CONFIG)
+    if config_args.config:
+        try:
+            defaults = validate_detection_config(load_detection_config(config_args.config))
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"Invalid --config {config_args.config}: {exc}", file=sys.stderr)
+            exit(2)
+
+    return build_arg_parser(defaults).parse_args()
+
+
+def validate_args(args):
+    config_values = {
+        key: getattr(args, key)
+        for key in DEFAULT_DETECTION_CONFIG
+    }
+    try:
+        validate_detection_config(config_values)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        exit(2)
 
 
 if __name__ == "__main__":
     args = get_args()
+    validate_args(args)
     if not 0.0 <= args.bbox_smoothing_alpha <= 1.0:
         print("--bbox-smoothing-alpha must be between 0 and 1", file=sys.stderr)
         exit(2)
