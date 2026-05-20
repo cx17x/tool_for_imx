@@ -168,4 +168,5 @@ http://<raspberry-pi-ip>:8080
 
 - `docs/runbook.md` - практический запуск, установка, диагностика;
 - `docs/object_detection_architecture.md` - архитектура потоков bbox/video;
+- `docs/detection_parameters.md` - описание параметров detection/tracker/video и влияние изменения значений;
 - `docs/systemd_services.md` - детали systemd services.
