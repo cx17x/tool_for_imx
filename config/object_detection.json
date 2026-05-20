@@ -16,6 +16,7 @@
   "tracker_measurement_noise": 30.0,
   "tracker_confidence_decay": 0.85,
   "motion_vector": true,
+  "motion_vector_mode": "velocity_arrow",
   "motion_vector_scale": 5.0,
   "motion_vector_min_speed": 0.2,
   "main_width": 640,

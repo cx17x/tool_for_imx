@@ -346,6 +346,104 @@ def get_labels():
     return labels
 
 
+def detection_center(detection):
+    x, y, w, h = detection.box
+    return int(round(x + w / 2)), int(round(y + h / 2))
+
+
+def draw_crosshair(image, center, color, radius=8, tick=16, thickness=2):
+    center_x, center_y = center
+    cv2.circle(image, (center_x, center_y), radius, color, thickness)
+    cv2.line(image, (center_x - tick, center_y), (center_x - radius, center_y), color, thickness)
+    cv2.line(image, (center_x + radius, center_y), (center_x + tick, center_y), color, thickness)
+    cv2.line(image, (center_x, center_y - tick), (center_x, center_y - radius), color, thickness)
+    cv2.line(image, (center_x, center_y + radius), (center_x, center_y + tick), color, thickness)
+
+
+def draw_center_reticle(image, center, color, thickness=2):
+    center_x, center_y = center
+    for radius in (18, 34, 52):
+        cv2.circle(image, (center_x, center_y), radius, color, thickness)
+    cv2.line(image, (center_x - 10, center_y), (center_x + 10, center_y), color, thickness + 1)
+    cv2.line(image, (center_x, center_y - 10), (center_x, center_y + 10), color, thickness + 1)
+
+
+def draw_target_reticle(image, center, color, thickness=2):
+    center_x, center_y = center
+    cv2.circle(image, (center_x, center_y), 7, color, thickness)
+    cv2.circle(image, (center_x, center_y), 13, color, thickness)
+    cv2.line(image, (center_x - 18, center_y), (center_x - 8, center_y), color, thickness)
+    cv2.line(image, (center_x + 8, center_y), (center_x + 18, center_y), color, thickness)
+    cv2.line(image, (center_x, center_y - 18), (center_x, center_y - 8), color, thickness)
+    cv2.line(image, (center_x, center_y + 8), (center_x, center_y + 18), color, thickness)
+
+
+def draw_aim_hud(image, x_delta, y_delta, distance):
+    lines = (
+        f"x_delta: {x_delta:.1f}",
+        f"y_delta: {y_delta:.1f}",
+        f"distance: {distance:.1f}",
+    )
+    x = 12
+    y = 24
+    for line in lines:
+        cv2.putText(image, line, (x + 1, y + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0, 0), 2)
+        cv2.putText(image, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255, 0), 2)
+        y += 24
+
+
+def draw_aim_vector(image, detection, mode):
+    image_height, image_width = image.shape[:2]
+    frame_center = (image_width // 2, image_height // 2)
+    target_center = detection_center(detection)
+    x_delta = float(target_center[0] - frame_center[0])
+    y_delta = float(target_center[1] - frame_center[1])
+    distance = float(np.hypot(x_delta, y_delta))
+
+    center_color = (0, 255, 0, 0)
+    target_color = (0, 0, 255, 0)
+    vector_color = (255, 0, 0, 0)
+
+    cv2.line(image, frame_center, target_center, vector_color, 3)
+    if mode == "center_to_object":
+        cv2.circle(image, frame_center, 9, center_color, cv2.FILLED)
+        cv2.circle(image, target_center, 9, target_color, cv2.FILLED)
+    else:
+        draw_center_reticle(image, frame_center, center_color)
+        draw_target_reticle(image, target_center, target_color)
+    draw_aim_hud(image, x_delta, y_delta, distance)
+
+
+def draw_motion_overlay(image, detections):
+    if not args.motion_vector or not detections:
+        return
+
+    mode = args.motion_vector_mode
+    if mode in ("center_to_object", "dual_crosshair"):
+        target = max(detections, key=lambda detection: float(detection.conf))
+        draw_aim_vector(image, target, mode)
+        return
+
+    for detection in detections:
+        if detection.motion_vector is None:
+            continue
+        vx, vy = detection.motion_vector
+        speed = float(np.hypot(vx, vy))
+        if speed < args.motion_vector_min_speed:
+            continue
+        center_x, center_y = detection_center(detection)
+        end_x = int(round(center_x + vx * args.motion_vector_scale))
+        end_y = int(round(center_y + vy * args.motion_vector_scale))
+        cv2.arrowedLine(
+            image,
+            (center_x, center_y),
+            (end_x, end_y),
+            (255, 255, 0, 0),
+            thickness=2,
+            tipLength=0.25,
+        )
+
+
 def draw_detections(request, stream="main"):
     """Draw the detections for this request onto the ISP output."""
     detections = last_results
@@ -385,22 +483,7 @@ def draw_detections(request, stream="main"):
                 # Draw detection box
                 cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0, 0), thickness=2)
 
-                if args.motion_vector and detection.motion_vector is not None:
-                    vx, vy = detection.motion_vector
-                    speed = float(np.hypot(vx, vy))
-                    if speed >= args.motion_vector_min_speed:
-                        center_x = int(round(x + w / 2))
-                        center_y = int(round(y + h / 2))
-                        end_x = int(round(center_x + vx * args.motion_vector_scale))
-                        end_y = int(round(center_y + vy * args.motion_vector_scale))
-                        cv2.arrowedLine(
-                            m.array,
-                            (center_x, center_y),
-                            (end_x, end_y),
-                            (255, 255, 0, 0),
-                            thickness=2,
-                            tipLength=0.25,
-                        )
+            draw_motion_overlay(m.array, detections)
 
         if not args.no_overlay and intrinsics.preserve_aspect_ratio:
             b_x, b_y, b_w, b_h = imx500.get_roi_scaled(request)
@@ -454,6 +537,12 @@ def build_arg_parser(defaults):
     parser.add_argument("--tracker-measurement-noise", type=float, default=defaults["tracker_measurement_noise"], help="Kalman measurement noise for bbox tracking")
     parser.add_argument("--tracker-confidence-decay", type=float, default=defaults["tracker_confidence_decay"], help="Confidence decay per predicted-only frame")
     parser.add_argument("--motion-vector", action=argparse.BooleanOptionalAction, default=defaults["motion_vector"], help="Draw and publish bbox center motion vectors")
+    parser.add_argument(
+        "--motion-vector-mode",
+        choices=["velocity_arrow", "center_to_object", "dual_crosshair"],
+        default=defaults["motion_vector_mode"],
+        help="Motion vector overlay mode",
+    )
     parser.add_argument("--motion-vector-scale", type=float, default=defaults["motion_vector_scale"], help="Scale factor for drawing motion vectors in pixels per frame")
     parser.add_argument("--motion-vector-min-speed", type=float, default=defaults["motion_vector_min_speed"], help="Minimum pixels per frame before drawing a motion vector")
     parser.add_argument("--iou", type=float, default=defaults["iou"], help="Set iou threshold")
